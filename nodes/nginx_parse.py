@@ -143,7 +143,14 @@ def parse_text_to_directives(
             comments=False,
             catch_errors=True,  # collect issues instead of raising
             check_ctx=False,    # don't reject directives in "wrong" blocks
-            check_args=False,   # don't reject unusual arg counts
+            check_args=True,    # DO validate argument counts/terminators —
+            # this is what catches a missing ";" before the next directive
+            # or block (e.g. "listen 80\n  location / {") rather than
+            # silently absorbing the next token(s) into the wrong
+            # directive's args. Recognized-directive validation only:
+            # analyze() skips this check entirely for any directive not in
+            # crossplane's own DIRECTIVES table, so unrecognized/third-party
+            # directives (lua_shared_dict, etc.) are still never rejected.
             strict=False,       # don't reject unrecognized directives
         )
     finally:

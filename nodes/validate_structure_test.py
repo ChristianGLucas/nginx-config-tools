@@ -46,9 +46,9 @@ def test_validate_structure_reports_line_number_on_unterminated_directive():
     result = validate_structure(ax, NginxConfig(config=MALFORMED_CONFIG))
     assert result.valid is False
     assert len(result.issues) >= 1
-    # See parse_config_test.py: this class of error is reported at EOF
-    # (line 7 in MALFORMED_CONFIG), not the line 3 mistake that caused it.
-    assert result.issues[0].line == 7
+    # See parse_config_test.py: the missing ";" on line 3 is caught exactly
+    # there by arg-count/terminator validation.
+    assert result.issues[0].line == 3
     assert result.issues[0].severity == "error"
 
 

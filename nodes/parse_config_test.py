@@ -52,18 +52,49 @@ def test_parse_config_golden():
     assert list(location.context_path) == ["http", "server"]
 
 
+def test_parse_config_missing_semicolon_before_next_directive_is_flagged_not_silently_merged():
+    # Regression test for a CRITICAL finding from independent review: with
+    # crossplane's own check_args=False, "listen 80" (missing ";") directly
+    # followed by "location / {" got silently absorbed as if it were
+    # `listen 80 location /` — three args, no error, valid=True — instead
+    # of surfacing the caller's typo as a structural issue. This is one of
+    # the single most common real nginx.conf mistakes, so it must be caught.
+    ax = _TestContext()
+    text = (
+        "http {\n"
+        "  server {\n"
+        "    listen 80\n"
+        "    location / {\n"
+        "      root /var/www;\n"
+        "    }\n"
+        "  }\n"
+        "}\n"
+    )
+    result = parse_config(ax, NginxConfig(config=text))
+    assert result.valid is False
+    assert len(result.issues) >= 1
+    assert result.issues[0].line == 3
+    assert "not terminated" in result.issues[0].message
+    # and, just as importantly: no directive anywhere in whatever WAS
+    # parsed should show "listen" with "location"/"/" merged into its args
+    from nodes.nginx_parse import flatten
+
+    for d in flatten(list(result.directives)):
+        if d.name == "listen":
+            assert "location" not in list(d.args)
+
+
 def test_parse_config_malformed_reports_structured_issue_not_crash():
     ax = _TestContext()
     result = parse_config(ax, NginxConfig(config=MALFORMED_CONFIG))
     assert result.error == ""  # not a hard failure — a best-effort parse
     assert result.valid is False
     assert len(result.issues) >= 1
-    # The missing ";" is on line 3, but this class of error (an unclosed
-    # block swallowing the rest of the file) is only detectable once the
-    # parser runs out of input looking for the block's "}" — so it is
-    # reported at EOF (line 7), matching crossplane's real, verified
-    # behavior for this input, not the line the mistake was made on.
-    assert result.issues[0].line == 7
+    # The missing ";" is on line 3 ("listen 80" with no terminator before
+    # the next directive) — arg-count/terminator validation catches it
+    # exactly there, not at EOF.
+    assert result.issues[0].line == 3
+    assert "not terminated" in result.issues[0].message
     assert result.issues[0].severity == "error"
     # message must never leak the internal temp file path used to satisfy
     # crossplane's file-based API — and must be stable across calls (see
