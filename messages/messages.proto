@@ -1,0 +1,372 @@
+// This file defines the data contracts (messages) for your Axiom package.
+// Every node's --input and --output refers to a message defined here.
+//
+// Run `axiom create message <Name>` to scaffold a new message below.
+// Run `axiom generate` to compile these definitions into language bindings in gen/.
+//
+// DOCUMENTATION
+//   Comments written directly above a message or field declaration are extracted
+//   automatically at publish time and shown in the Axiom registry as documentation.
+//   Write your descriptions there — no separate doc files needed.
+//
+//   Leading comment  (no blank line before the declaration) → registry description ✓
+//   Detached comment (blank line before the declaration)    → ignored by registry  ✗
+//
+// This file is yours to edit. Axiom only appends new message blocks — it never
+// overwrites or removes content you have written.
+
+syntax = "proto3";
+
+package christiangeorgelucas.nginx_config_tools;
+
+// Deterministic structural parsing and inspection of nginx configuration
+// text (nginx.conf, and any server/location/upstream block or snippet on
+// its own). Wraps nginxinc/crossplane (Apache-2.0), the official NGINX,
+// Inc. config parser — the same lexer/grammar nginx's own tooling uses.
+//
+// SECURITY / DETERMINISM. Every node here is a pure text-in/struct-out
+// transform. The config is always supplied as text by the caller — no
+// node ever executes nginx, touches the real filesystem beyond an
+// ephemeral temp file used only to satisfy crossplane's file-based API
+// (written and deleted within the same call, never read back as a path
+// the caller controls), or follows `include` directives onto disk —
+// `include` paths are reported as data, never opened. No network, no
+// wall-clock, no randomness. Input text is capped at 2 MB (2,000,000
+// bytes, raw UTF-8 byte length) and brace nesting is capped at 64 levels,
+// both checked before parsing begins; either bound trips a structured
+// error (`error` field) rather than a crash or a hang. A malformed
+// config (unbalanced braces, an unterminated directive) is reported as a
+// structured `Issue` with a line number — parsing never throws.
+
+// The canonical envelope every node accepts and (aside from GetDirectiveValue,
+// which additionally needs a directive name) is the sole input type. `config`
+// is the input-only convenience field: raw nginx config text. `directives`/
+// `issues`/`valid`/`error` are the canonical parsed fields — populated by
+// ParseConfig. Any node that receives a NginxConfig with `directives` already
+// populated reuses it directly (cheap chaining after ParseConfig); if
+// `directives` is empty, the node parses `config` itself first. This mirrors
+// image-tools' `Image` envelope (`url` fetched only when `data` is empty).
+message NginxConfig {
+  // Raw nginx config text (a full nginx.conf, or any standalone block/
+  // snippet). Input-only convenience — ignored once `directives` is set.
+  string config = 1;
+  // The parsed directive tree, outermost directives in source order. Set by
+  // ParseConfig; pass it through unchanged to chain into another node
+  // without re-parsing.
+  repeated Directive directives = 2;
+  // Structural issues found while parsing. Empty on a clean parse.
+  repeated Issue issues = 3;
+  // True iff `issues` contains no "error"-severity entry and `error` is unset.
+  bool valid = 4;
+  // Set only when the input could not be parsed at all (oversized input,
+  // nesting too deep). `directives`/`issues` are empty in that case.
+  string error = 5;
+}
+
+// A structural or syntax issue found while parsing, never fatal on its own
+// unless it is the reason `directives` came back empty.
+message Issue {
+  // 1-based line number the issue applies to (0 if not line-specific).
+  int32 line = 1;
+  // "error" | "warning".
+  string severity = 2;
+  string message = 3;
+}
+
+// One parsed nginx directive or block, recursively. A block (e.g. `server`,
+// `location`, `upstream`, `if`) has non-empty `children` and `is_block` true;
+// a simple directive (e.g. `listen 80;`) has empty `children`.
+message Directive {
+  // The directive keyword, e.g. "server", "listen", "proxy_pass".
+  string name = 1;
+  // Arguments as written, in order, e.g. listen's ["80", "default_server"].
+  repeated string args = 2;
+  // 1-based line number the directive starts on.
+  int32 line = 3;
+  // The block nesting this directive sits inside, outermost first, e.g.
+  // ["http", "server"] for a directive directly inside a server block.
+  // Empty for a top-level directive.
+  repeated string context_path = 4;
+  // Nested directives, for a block directive. Empty for a non-block directive.
+  repeated Directive children = 5;
+  bool is_block = 6;
+}
+
+// Flattened output of ListDirectives: every directive in the config
+// (top-level and nested), each carrying its own context_path, in a single
+// list rather than a tree — convenient for filtering/searching by name.
+message DirectiveList {
+  repeated Directive directives = 1;
+  // Set only when the input could not be parsed at all (oversized input,
+  // nesting too deep); `directives` is empty in that case.
+  string error = 2;
+}
+
+// One `listen` directive's arguments, decomposed. `raw` preserves the
+// original argument list verbatim for anything the decomposition drops.
+message ListenSpec {
+  // Host/address part, e.g. "127.0.0.1", "[::]", or "" if the arg was a
+  // bare port ("80").
+  string address = 1;
+  // Port number, 0 if not present/parseable (e.g. a unix socket listen).
+  int32 port = 2;
+  bool ssl = 3;
+  bool http2 = 4;
+  bool default_server = 5;
+  // The full original argument list, space-joined, verbatim.
+  string raw = 6;
+  int32 line = 7;
+  repeated string context_path = 8;
+}
+
+message ListenList {
+  repeated ListenSpec listens = 1;
+  // Set only when the input could not be parsed at all; `listens` is empty.
+  string error = 2;
+}
+
+// One `server { ... }` block: its listen specs, server_names, and full
+// directive set (immediate children, not recursively flattened).
+message ServerBlock {
+  repeated ListenSpec listen = 1;
+  repeated string server_names = 2;
+  int32 line = 3;
+  repeated Directive directives = 4;
+}
+
+message ServerBlockList {
+  repeated ServerBlock servers = 1;
+  // Set only when the input could not be parsed at all; `servers` is empty.
+  string error = 2;
+}
+
+// One `location { ... }` block found anywhere in the config.
+message LocationBlock {
+  // "" (prefix match), "=", "~", "~*", or "^~".
+  string modifier = 1;
+  // The location path/pattern, e.g. "/api/", "\\.php$".
+  string path = 2;
+  int32 line = 3;
+  // The enclosing server's server_name values, for orientation (empty if
+  // the location isn't nested inside a server, e.g. a bare snippet).
+  repeated string server_names = 4;
+  repeated Directive directives = 5;
+  repeated string context_path = 6;
+}
+
+message LocationBlockList {
+  repeated LocationBlock locations = 1;
+  // Set only when the input could not be parsed at all; `locations` is empty.
+  string error = 2;
+}
+
+// One member `server <addr>;` line inside an `upstream { ... }` block.
+message UpstreamServer {
+  string address = 1;
+  // Parameter flags/kv pairs following the address, e.g. "weight=3",
+  // "backup", "down", verbatim strings (not further parsed).
+  repeated string params = 2;
+  int32 line = 3;
+}
+
+// One `upstream <name> { ... }` block.
+message Upstream {
+  string name = 1;
+  repeated UpstreamServer servers = 2;
+  // The load-balancing method directive name found in the block:
+  // "round_robin" (nginx's default, when none of the below are present),
+  // "least_conn", "ip_hash", "hash", or "random".
+  string method = 3;
+  int32 line = 4;
+}
+
+message UpstreamList {
+  repeated Upstream upstreams = 1;
+  // Set only when the input could not be parsed at all; `upstreams` is empty.
+  string error = 2;
+}
+
+// One server_name value, tied to the server block it was declared in (by
+// that block's starting line) so repeated names across servers are still
+// distinguishable.
+message ServerNameEntry {
+  string name = 1;
+  int32 server_line = 2;
+}
+
+message ServerNameList {
+  repeated ServerNameEntry server_names = 1;
+  // Set only when the input could not be parsed at all; `server_names` is empty.
+  string error = 2;
+}
+
+// One `proxy_pass` or `fastcgi_pass` directive — the routing/backend target.
+message ProxyTarget {
+  // "proxy_pass" | "fastcgi_pass".
+  string directive = 1;
+  // The target as written, e.g. "http://backend", "127.0.0.1:9000".
+  string target = 2;
+  int32 line = 3;
+  repeated string context_path = 4;
+}
+
+message ProxyTargetList {
+  repeated ProxyTarget targets = 1;
+  // Set only when the input could not be parsed at all; `targets` is empty.
+  string error = 2;
+}
+
+// SSL/TLS configuration collected from one server block.
+message SSLConfig {
+  repeated string server_names = 1;
+  string certificate = 2;
+  string certificate_key = 3;
+  repeated string protocols = 4;
+  string ciphers = 5;
+  int32 line = 6;
+}
+
+message SSLConfigList {
+  repeated SSLConfig configs = 1;
+  // Set only when the input could not be parsed at all; `configs` is empty.
+  string error = 2;
+}
+
+// One `root` or `alias` document-root directive.
+message DocumentRoot {
+  // "root" | "alias".
+  string directive = 1;
+  string path = 2;
+  int32 line = 3;
+  repeated string context_path = 4;
+}
+
+message DocumentRootList {
+  repeated DocumentRoot roots = 1;
+  // Set only when the input could not be parsed at all; `roots` is empty.
+  string error = 2;
+}
+
+// One `rewrite` directive.
+message RewriteRule {
+  string regex = 1;
+  string replacement = 2;
+  // Optional trailing flag: "last", "break", "redirect", "permanent", or "".
+  string flag = 3;
+  int32 line = 4;
+  repeated string context_path = 5;
+}
+
+// One `return` directive.
+message ReturnDirective {
+  // The status code (or first arg) as written, e.g. "200", "301".
+  string code = 1;
+  // The remaining argument (URL or response body text), "" if none.
+  string text = 2;
+  int32 line = 3;
+  repeated string context_path = 4;
+}
+
+message RewriteList {
+  repeated RewriteRule rewrites = 1;
+  repeated ReturnDirective returns = 2;
+  // Set only when the input could not be parsed at all; both lists empty.
+  string error = 3;
+}
+
+// One `include` directive. The path is reported as data only — this
+// package never opens, globs, or fetches it.
+message IncludeDirective {
+  string path = 1;
+  int32 line = 2;
+  repeated string context_path = 3;
+}
+
+message IncludeList {
+  repeated IncludeDirective includes = 1;
+  // Set only when the input could not be parsed at all; `includes` is empty.
+  string error = 2;
+}
+
+// One `access_log` or `error_log` directive.
+message LogPathEntry {
+  // "access_log" | "error_log".
+  string directive = 1;
+  // The log path/destination as written; "off" is preserved verbatim
+  // (access_log's way of disabling logging in a context).
+  string path = 2;
+  // access_log's format name (2nd arg) or error_log's level (2nd arg); ""
+  // if not present.
+  string format_or_level = 3;
+  int32 line = 4;
+  repeated string context_path = 5;
+}
+
+message LogPathList {
+  repeated LogPathEntry logs = 1;
+  // Set only when the input could not be parsed at all; `logs` is empty.
+  string error = 2;
+}
+
+// One nginx variable reference: a `set $name value;` declaration, or a
+// `$name` usage found inside another directive's arguments.
+message VariableUsage {
+  // Variable name, without the leading "$".
+  string name = 1;
+  // "set" (declared via the `set` directive) | "usage" (referenced in some
+  // other directive's arguments).
+  string kind = 2;
+  // For kind="set": the assigned value. For kind="usage": the name of the
+  // directive the reference appeared in (e.g. "proxy_pass").
+  string value = 3;
+  int32 line = 4;
+  repeated string context_path = 5;
+}
+
+message VariableUsageList {
+  repeated VariableUsage variables = 1;
+  // Set only when the input could not be parsed at all; `variables` is empty.
+  string error = 2;
+}
+
+// Input for GetDirectiveValue: a config plus which directive to look up,
+// optionally scoped to a specific block context.
+message GetDirectiveValueInput {
+  NginxConfig nginx_config = 1;
+  // Directive name to search for, e.g. "listen", "proxy_pass".
+  string directive_name = 2;
+  // If non-empty, only match directives whose context_path exactly equals
+  // this (e.g. ["http", "server"]). Empty = search the whole config.
+  repeated string context_path = 3;
+}
+
+message DirectiveValueList {
+  repeated Directive matches = 1;
+  // Set only when the input could not be parsed at all; `matches` is empty.
+  string error = 2;
+}
+
+// A structural/coverage summary of a parsed config.
+message ConfigSummary {
+  int32 total_directives = 1;
+  // Block-directive name -> count, e.g. "server" -> 2, "location" -> 5.
+  map<string, int32> block_counts = 2;
+  int32 server_count = 3;
+  int32 location_count = 4;
+  int32 upstream_count = 5;
+  // Deepest block nesting level found (0 = no blocks, flat directive list).
+  int32 max_depth = 6;
+  // Unique server_name values across the whole config.
+  repeated string server_names = 7;
+  int32 error_count = 8;
+  int32 warning_count = 9;
+  // Set only when the input could not be parsed at all; all counts are 0.
+  string error = 10;
+}
+
+// Output of ValidateStructure: whether the config is structurally sound
+// (balanced braces, every directive terminated) plus the issues found.
+message ValidationResult {
+  bool valid = 1;
+  repeated Issue issues = 2;
+}

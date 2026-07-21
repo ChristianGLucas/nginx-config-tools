@@ -1,0 +1,170 @@
+name: christiangeorgelucas/nginx-config-tools
+version: 0.1.0
+language: python
+description: >-
+  Deterministic structural parsing and inspection of nginx configuration
+  text (nginx.conf and any server/location/upstream block or snippet on its
+  own), wrapping nginxinc/crossplane (Apache-2.0) — the official NGINX, Inc.
+  config parser, the same lexer/grammar nginx's own tooling uses. The config
+  is always supplied as text by the caller: no nginx execution, no
+  filesystem, no network, no wall-clock, no randomness; `include` directives
+  are reported by path, never followed onto disk. Covers the
+  config-inspection surface broadly: full structured directive/block parse,
+  a flattened directive listing, server-block extraction (listen + server
+  names + directives), location-block extraction (path/modifier/directives),
+  upstream-block extraction (members + load-balancing method), listen
+  decomposition (address/port/ssl/http2/default_server), the server_name
+  virtual-host inventory, proxy_pass/fastcgi_pass routing targets, per-server
+  SSL config, root/alias document roots, rewrite/return directives, include
+  paths, access_log/error_log paths, set/variable declarations and usages, a
+  scoped directive-value lookup, a structural summary, and standalone
+  validation. Input is bounded (2 MB, 64 levels of brace nesting); a
+  malformed config always yields a structured result with line numbers,
+  never a crash.
+license: MIT
+author: Christian George Lucas
+tags:
+  - nginx
+  - nginx-conf
+  - config-parsing
+  - reverse-proxy
+  - devops
+  - sre
+  - infrastructure-as-code
+  - crossplane
+nodes:
+    - name: ParseConfig
+      input: NginxConfig
+      output: NginxConfig
+      description: >-
+        Parse nginx config text into its full structured directive/block
+        tree: every directive's name, arguments, 1-based line number,
+        context_path (enclosing block names, outermost first), and nested
+        children for blocks (server, location, upstream, http, if, ...).
+        Returns structural issues (with line numbers) instead of throwing on
+        a malformed config. Every other node in this package accepts the
+        same NginxConfig envelope and will parse `config` itself if
+        `directives` isn't already populated, so ParseConfig is optional
+        when you only need one specialized view — but calling it first and
+        chaining its output avoids re-parsing when you need several views of
+        the same config.
+    - name: ListDirectives
+      input: NginxConfig
+      output: DirectiveList
+      description: >-
+        Flatten the parsed directive tree (top-level and every nested
+        directive) into a single ordered list, each entry carrying its own
+        context_path. Useful for a full inventory or for filtering by
+        directive name across the whole config.
+    - name: ExtractServerBlocks
+      input: NginxConfig
+      output: ServerBlockList
+      description: >-
+        Extract every `server { ... }` block in the config: its decomposed
+        listen specs, its server_name values, its starting line, and its
+        immediate directives.
+    - name: ExtractLocationBlocks
+      input: NginxConfig
+      output: LocationBlockList
+      description: >-
+        Extract every `location { ... }` block anywhere in the config: its
+        match modifier ("", "=", "~", "~*", "^~"), its path/pattern, the
+        enclosing server's server_name values (for orientation), and its
+        immediate directives.
+    - name: ExtractUpstreams
+      input: NginxConfig
+      output: UpstreamList
+      description: >-
+        Extract every `upstream <name> { ... }` block: its member `server`
+        lines (address + trailing params like weight=/backup/down verbatim),
+        and its load-balancing method (round_robin, least_conn, ip_hash,
+        hash, or random) inferred from which method directive is present.
+    - name: ExtractListenDirectives
+      input: NginxConfig
+      output: ListenList
+      description: >-
+        Extract and decompose every `listen` directive in the config:
+        address, port, and the ssl/http2/default_server flags, plus the
+        original argument list verbatim.
+    - name: ExtractServerNames
+      input: NginxConfig
+      output: ServerNameList
+      description: >-
+        Extract every `server_name` value declared anywhere in the config —
+        the virtual-host inventory — each tied to the starting line of the
+        server block that declared it.
+    - name: ExtractProxyTargets
+      input: NginxConfig
+      output: ProxyTargetList
+      description: >-
+        Extract every `proxy_pass` and `fastcgi_pass` directive: which
+        directive it was, its target as written (an upstream name, URL, or
+        host:port), and where it sits in the config — the routing/backend
+        map for understanding traffic flow.
+    - name: ExtractSSLConfig
+      input: NginxConfig
+      output: SSLConfigList
+      description: >-
+        Extract SSL/TLS configuration per server block: ssl_certificate,
+        ssl_certificate_key, ssl_protocols, and ssl_ciphers, tied to that
+        server's server_name values.
+    - name: ExtractDocumentRoots
+      input: NginxConfig
+      output: DocumentRootList
+      description: >-
+        Extract every `root` and `alias` directive: which one it was, the
+        filesystem path as written, and where it sits in the config.
+    - name: ExtractRewrites
+      input: NginxConfig
+      output: RewriteList
+      description: >-
+        Extract every `rewrite` directive (regex, replacement, optional
+        last/break/redirect/permanent flag) and every `return` directive
+        (status code and optional URL/body text) in the config.
+    - name: ExtractIncludes
+      input: NginxConfig
+      output: IncludeList
+      description: >-
+        Extract every `include` directive's path and location in the
+        config. Paths are reported as data only — this node never opens,
+        globs, or fetches them.
+    - name: ExtractLogPaths
+      input: NginxConfig
+      output: LogPathList
+      description: >-
+        Extract every `access_log` and `error_log` directive: which one it
+        was, the destination path (or "off"), and the format name / log
+        level (2nd argument) if present.
+    - name: ExtractVariables
+      input: NginxConfig
+      output: VariableUsageList
+      description: >-
+        Extract every nginx variable touchpoint in the config: `set $name
+        value;` declarations, and every `$name` reference found inside any
+        other directive's arguments (e.g. inside proxy_pass, log_format,
+        return).
+    - name: GetDirectiveValue
+      input: GetDirectiveValueInput
+      output: DirectiveValueList
+      description: >-
+        Look up every directive matching a given name, optionally scoped to
+        an exact context_path (e.g. only "listen" directives inside ["http",
+        "server"]). Returns the matching directives with their full
+        arguments and location — the general-purpose lookup for any
+        directive this package has no dedicated Extract* node for.
+    - name: SummarizeConfig
+      input: NginxConfig
+      output: ConfigSummary
+      description: >-
+        Summarize a parsed config: total directive count, a block-type ->
+        count map, server/location/upstream counts, the deepest block
+        nesting level, the unique server_name inventory, and the count of
+        parse errors/warnings.
+    - name: ValidateStructure
+      input: NginxConfig
+      output: ValidationResult
+      description: >-
+        Validate a config's basic structural correctness — balanced braces,
+        every directive terminated by `;` or opening a block — and report
+        every issue found with its line number, without needing any other
+        extraction.

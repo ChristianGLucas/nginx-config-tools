@@ -1,0 +1,2 @@
+# Add your Python runtime dependencies here, one per line.
+crossplane==0.5.8
