@@ -1,7 +1,6 @@
 from gen.messages_pb2 import NginxConfig
 from nodes.summarize_config import summarize_config
 from nodes._test_fixtures import SAMPLE_CONFIG, MALFORMED_CONFIG
-from nodes.nginx_parse import MAX_CONFIG_BYTES
 from gen.axiom_context import SecretStatus
 
 
@@ -64,11 +63,3 @@ def test_summarize_config_counts_malformed_issues():
     result = summarize_config(ax, NginxConfig(config=MALFORMED_CONFIG))
     assert result.error == ""
     assert result.error_count >= 1
-
-
-def test_summarize_config_error_path():
-    ax = _TestContext()
-    huge = "http {\n" + ("  # pad\n" * (MAX_CONFIG_BYTES // 8 + 100)) + "}\n"
-    result = summarize_config(ax, NginxConfig(config=huge))
-    assert result.error != ""
-    assert result.total_directives == 0

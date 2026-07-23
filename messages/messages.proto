@@ -31,12 +31,11 @@ package christiangeorgelucas.nginx_config_tools;
 // (written and deleted within the same call, never read back as a path
 // the caller controls), or follows `include` directives onto disk —
 // `include` paths are reported as data, never opened. No network, no
-// wall-clock, no randomness. Input text is capped at 2 MB (2,000,000
-// bytes, raw UTF-8 byte length) and brace nesting is capped at 64 levels,
-// both checked before parsing begins; either bound trips a structured
-// error (`error` field) rather than a crash or a hang. A malformed
-// config (unbalanced braces, an unterminated directive) is reported as a
-// structured `Issue` with a line number — parsing never throws.
+// wall-clock, no randomness. The platform owns size/resource limits, not
+// this package. A malformed config (unbalanced braces, an unterminated
+// directive) is reported as a structured `Issue` with a line number, and
+// even pathologically deep brace nesting is reported via the `error`
+// field rather than crashing — parsing never throws.
 
 // The canonical envelope every node accepts and (aside from GetDirectiveValue,
 // which additionally needs a directive name) is the sole input type. `config`
@@ -58,8 +57,8 @@ message NginxConfig {
   repeated Issue issues = 3;
   // True iff `issues` contains no "error"-severity entry and `error` is unset.
   bool valid = 4;
-  // Set only when the input could not be parsed at all (oversized input,
-  // nesting too deep). `directives`/`issues` are empty in that case.
+  // Set only when the input could not be parsed at all (pathologically
+  // deep brace nesting). `directives`/`issues` are empty in that case.
   string error = 5;
 }
 
@@ -97,8 +96,8 @@ message Directive {
 // list rather than a tree — convenient for filtering/searching by name.
 message DirectiveList {
   repeated Directive directives = 1;
-  // Set only when the input could not be parsed at all (oversized input,
-  // nesting too deep); `directives` is empty in that case.
+  // Set only when the input could not be parsed at all (pathologically
+  // deep brace nesting); `directives` is empty in that case.
   string error = 2;
 }
 

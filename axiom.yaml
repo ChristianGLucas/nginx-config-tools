@@ -1,5 +1,5 @@
 name: christiangeorgelucas/nginx-config-tools
-version: 0.1.0
+version: 0.1.1
 language: python
 description: >-
   Deterministic structural parsing and inspection of nginx configuration
@@ -18,7 +18,7 @@ description: >-
   SSL config, root/alias document roots, rewrite/return directives, include
   paths, access_log/error_log paths, set/variable declarations and usages, a
   scoped directive-value lookup, a structural summary, and standalone
-  validation. Input is bounded (2 MB, 64 levels of brace nesting); a
+  validation. The platform owns size/resource limits, not this package; a
   malformed config always yields a structured result with line numbers,
   never a crash.
 license: MIT

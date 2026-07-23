@@ -9,11 +9,13 @@ opens, globs, or follows any `include` directive onto disk (an `include`
 directive is reported like any other directive, with its raw path as an
 arg — never resolved).
 
-Bounds enforced before crossplane ever runs (so a pathological input fails
-fast with a structured error rather than a slow parse or a stack overflow):
-  - MAX_CONFIG_BYTES on the raw UTF-8 byte length of the input text.
-  - MAX_NESTING_DEPTH on brace nesting, found with a single linear scan
-    (quote/comment aware) that never recurses.
+Every node is a pure input->output function: size/resource/DoS limits are
+the platform's job, not this package's. This module contains no byte-size
+or nesting-depth caps. The one thing it still guards against is a crash:
+crossplane's own parser (and this module's tree conversion) is recursive,
+so pathologically deep brace nesting could in principle exhaust the Python
+call stack. That failure mode is caught (`RecursionError`) and turned into
+a normal structured `error`, never an unhandled exception.
 """
 
 import os
@@ -25,9 +27,6 @@ from typing import List, Optional, Tuple
 import crossplane
 
 from gen import messages_pb2 as m
-
-MAX_CONFIG_BYTES = 2_000_000  # 2 MB
-MAX_NESTING_DEPTH = 64
 
 _LOCATION_MODIFIERS = {"=", "~", "~*", "^~"}
 UPSTREAM_METHOD_DIRECTIVES = {"least_conn", "ip_hash", "hash", "random"}
@@ -42,59 +41,20 @@ def _sanitize_error_message(message: str) -> str:
     return _TRAILING_FILE_REF_RE.sub("", message)
 
 
-def _find_excess_nesting(text: str) -> bool:
-    """Single linear, non-recursive scan for brace depth > MAX_NESTING_DEPTH.
-
-    Quote-aware (nginx tokens may be '...'/"..." quoted, and braces inside a
-    quoted string are not structural) and comment-aware (a `#` starts a
-    line comment outside of a quote). Approximate relative to nginx's own
-    escaping rules, but that's fine here: this function's only job is a
-    conservative pre-check that stops a maliciously deep config before the
-    real (recursive) parser ever sees it, not to be the parser itself.
-    """
-    depth = 0
-    in_squote = False
-    in_dquote = False
-    in_comment = False
-    escaped = False
-    for ch in text:
-        if in_comment:
-            if ch == "\n":
-                in_comment = False
-            continue
-        if escaped:
-            escaped = False
-            continue
-        if ch == "\\" and (in_squote or in_dquote):
-            escaped = True
-            continue
-        if in_squote:
-            if ch == "'":
-                in_squote = False
-            continue
-        if in_dquote:
-            if ch == '"':
-                in_dquote = False
-            continue
-        if ch == "#":
-            in_comment = True
-            continue
-        if ch == "'":
-            in_squote = True
-            continue
-        if ch == '"':
-            in_dquote = True
-            continue
-        if ch == "{":
-            depth += 1
-            if depth > MAX_NESTING_DEPTH:
-                return True
-        elif ch == "}":
-            depth = max(0, depth - 1)
-    return False
-
-
 def _stmt_to_directive(stmt: dict, context_path: List[str]) -> "m.Directive":
+    """Convert one crossplane statement (and its `block` children,
+    recursively) into our Directive tree.
+
+    Deliberately recursive, not iterative: a protobuf repeated message
+    field copies its element on `.append()`, so a child's `children` must
+    be fully built *before* the child itself is appended to its parent —
+    an iterative build-then-backfill approach silently loses everything
+    appended after the copy. The recursion depth this incurs is bounded by
+    crossplane's own (also recursive) parse of the same statement tree, so
+    if `crossplane.parse()` above didn't hit Python's recursion limit,
+    this won't either; the call site still wraps both in `RecursionError`
+    handling as a belt-and-braces guard against a crash either way.
+    """
     is_block = "block" in stmt
     d = m.Directive(
         name=stmt.get("directive") or "",
@@ -116,43 +76,39 @@ def parse_text_to_directives(
     """Parse raw nginx config text. Returns (directives, issues, valid, error).
 
     `error` is set (and directives/issues empty) only when the whole input
-    could not be processed at all (over the size/depth bound). Otherwise
-    parsing is best-effort: structural problems come back as `issues` with
-    line numbers, never an exception.
+    could not be processed at all — in practice, only when parsing hits the
+    Python recursion limit on pathologically deep brace nesting (see module
+    docstring). Otherwise parsing is best-effort: structural problems come
+    back as `issues` with line numbers, never an exception.
     """
     if text is None:
         text = ""
-    byte_len = len(text.encode("utf-8", errors="replace"))
-    if byte_len > MAX_CONFIG_BYTES:
-        return [], [], False, (
-            f"input exceeds the {MAX_CONFIG_BYTES}-byte limit "
-            f"({byte_len} bytes given)"
-        )
-    if _find_excess_nesting(text):
-        return [], [], False, (
-            f"brace nesting exceeds the {MAX_NESTING_DEPTH}-level limit"
-        )
 
     fd, path = tempfile.mkstemp(prefix="nginx-config-tools-", suffix=".conf")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
-        payload = crossplane.parse(
-            path,
-            single=True,       # never resolve/open/glob include targets
-            comments=False,
-            catch_errors=True,  # collect issues instead of raising
-            check_ctx=False,    # don't reject directives in "wrong" blocks
-            check_args=True,    # DO validate argument counts/terminators —
-            # this is what catches a missing ";" before the next directive
-            # or block (e.g. "listen 80\n  location / {") rather than
-            # silently absorbing the next token(s) into the wrong
-            # directive's args. Recognized-directive validation only:
-            # analyze() skips this check entirely for any directive not in
-            # crossplane's own DIRECTIVES table, so unrecognized/third-party
-            # directives (lua_shared_dict, etc.) are still never rejected.
-            strict=False,       # don't reject unrecognized directives
-        )
+        try:
+            payload = crossplane.parse(
+                path,
+                single=True,       # never resolve/open/glob include targets
+                comments=False,
+                catch_errors=True,  # collect issues instead of raising
+                check_ctx=False,    # don't reject directives in "wrong" blocks
+                check_args=True,    # DO validate argument counts/terminators —
+                # this is what catches a missing ";" before the next directive
+                # or block (e.g. "listen 80\n  location / {") rather than
+                # silently absorbing the next token(s) into the wrong
+                # directive's args. Recognized-directive validation only:
+                # analyze() skips this check entirely for any directive not in
+                # crossplane's own DIRECTIVES table, so unrecognized/third-party
+                # directives (lua_shared_dict, etc.) are still never rejected.
+                strict=False,       # don't reject unrecognized directives
+            )
+        except RecursionError:
+            return [], [], False, (
+                "config nesting is too deep for this process to parse"
+            )
     finally:
         try:
             os.remove(path)
@@ -161,7 +117,12 @@ def parse_text_to_directives(
 
     file_result = payload["config"][0] if payload.get("config") else {}
     stmts = file_result.get("parsed") or []
-    directives = [_stmt_to_directive(s, []) for s in stmts]
+    try:
+        directives = [_stmt_to_directive(s, []) for s in stmts]
+    except RecursionError:
+        return [], [], False, (
+            "config nesting is too deep for this process to parse"
+        )
 
     issues: List["m.Issue"] = []
     for err in file_result.get("errors") or []:
@@ -191,11 +152,19 @@ def resolve(
 
 
 def flatten(directives: List["m.Directive"]):
-    """Yield every directive in the tree, depth-first, in source order."""
-    for d in directives:
+    """Yield every directive in the tree, depth-first, in source order.
+
+    Iterative (explicit stack), not recursive — this tree's depth tracks
+    the config's block nesting, which is caller-controlled and unbounded,
+    so a recursive walk would risk a Python stack overflow on a
+    pathologically deep tree instead of just doing more work.
+    """
+    stack = list(reversed(directives))
+    while stack:
+        d = stack.pop()
         yield d
         if d.children:
-            yield from flatten(d.children)
+            stack.extend(reversed(d.children))
 
 
 def parse_location_args(args: List[str]) -> Tuple[str, str]:
@@ -254,34 +223,41 @@ def collect_locations(directives: List["m.Directive"]) -> List["m.LocationBlock"
     """Every `location` block anywhere, each tagged with its nearest
     enclosing server's server_name values (found top-down, since a
     Directive's own context_path only carries ancestor block *names*, not
-    server_name *values*)."""
+    server_name *values*).
+
+    Iterative (explicit stack), not recursive — same rationale as flatten().
+    """
     out: List["m.LocationBlock"] = []
 
-    def _walk(nodes: List["m.Directive"], server_names: List[str]):
-        for d in nodes:
-            if d.name == "location" and d.is_block:
-                modifier, path = parse_location_args(list(d.args))
-                out.append(
-                    m.LocationBlock(
-                        modifier=modifier,
-                        path=path,
-                        line=d.line,
-                        server_names=list(server_names),
-                        directives=list(d.children),
-                        context_path=list(d.context_path),
-                    )
+    # Stack entries: (directive, enclosing server's server_names).
+    stack: List[Tuple["m.Directive", List[str]]] = [
+        (d, []) for d in reversed(directives)
+    ]
+    while stack:
+        d, server_names = stack.pop()
+        if d.name == "location" and d.is_block:
+            modifier, path = parse_location_args(list(d.args))
+            out.append(
+                m.LocationBlock(
+                    modifier=modifier,
+                    path=path,
+                    line=d.line,
+                    server_names=list(server_names),
+                    directives=list(d.children),
+                    context_path=list(d.context_path),
                 )
-            if d.is_block:
-                next_names = server_names
-                if d.name == "server":
-                    names = []
-                    for c in d.children:
-                        if c.name == "server_name":
-                            names.extend(c.args)
-                    next_names = names
-                _walk(list(d.children), next_names)
+            )
+        if d.is_block:
+            next_names = server_names
+            if d.name == "server":
+                names = []
+                for c in d.children:
+                    if c.name == "server_name":
+                        names.extend(c.args)
+                next_names = names
+            for c in reversed(d.children):
+                stack.append((c, next_names))
 
-    _walk(directives, [])
     return out
 
 

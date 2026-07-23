@@ -11,8 +11,8 @@ Every node is a pure, stateless transform: the config is always supplied as text
 There is no nginx execution, no filesystem access beyond an ephemeral temp file used only to
 satisfy crossplane's file-based API (written and deleted within the same call), no network, no
 wall-clock, no randomness. `include` directives are reported by path as data — never opened,
-globbed, or fetched. Input is bounded (2 MB / 64 levels of brace nesting) and a malformed config
-always yields a structured result with line numbers — never a crash.
+globbed, or fetched. The platform owns size/resource limits, not this package; a malformed
+config always yields a structured result with line numbers — never a crash.
 
 ## The envelope
 

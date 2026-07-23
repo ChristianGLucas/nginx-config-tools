@@ -1,7 +1,6 @@
 from gen.messages_pb2 import NginxConfig
 from nodes.validate_structure import validate_structure
 from nodes._test_fixtures import SAMPLE_CONFIG, MALFORMED_CONFIG
-from nodes.nginx_parse import MAX_CONFIG_BYTES
 from gen.axiom_context import SecretStatus
 
 
@@ -58,12 +57,3 @@ def test_validate_structure_unbalanced_braces():
     result = validate_structure(ax, NginxConfig(config=text))
     assert result.valid is False
     assert len(result.issues) >= 1
-
-
-def test_validate_structure_oversized_input_becomes_a_reported_issue():
-    ax = _TestContext()
-    huge = "http {\n" + ("  # pad\n" * (MAX_CONFIG_BYTES // 8 + 100)) + "}\n"
-    result = validate_structure(ax, NginxConfig(config=huge))
-    assert result.valid is False
-    assert len(result.issues) == 1
-    assert result.issues[0].severity == "error"

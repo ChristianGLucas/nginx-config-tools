@@ -1,7 +1,6 @@
 from gen.messages_pb2 import NginxConfig
 from nodes.extract_server_blocks import extract_server_blocks
 from nodes._test_fixtures import SAMPLE_CONFIG
-from nodes.nginx_parse import MAX_CONFIG_BYTES
 from gen.axiom_context import SecretStatus
 
 
@@ -55,12 +54,4 @@ def test_extract_server_blocks_no_servers_returns_empty_list():
     ax = _TestContext()
     result = extract_server_blocks(ax, NginxConfig(config="events {}\n"))
     assert result.error == ""
-    assert len(result.servers) == 0
-
-
-def test_extract_server_blocks_error_path():
-    ax = _TestContext()
-    huge = "http {\n" + ("  # pad\n" * (MAX_CONFIG_BYTES // 8 + 100)) + "}\n"
-    result = extract_server_blocks(ax, NginxConfig(config=huge))
-    assert result.error != ""
     assert len(result.servers) == 0

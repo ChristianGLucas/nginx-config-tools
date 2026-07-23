@@ -1,6 +1,5 @@
 from gen.messages_pb2 import NginxConfig
 from nodes.parse_config import parse_config
-from nodes.nginx_parse import MAX_CONFIG_BYTES, MAX_NESTING_DEPTH
 from nodes._test_fixtures import SAMPLE_CONFIG, MALFORMED_CONFIG
 from gen.axiom_context import SecretStatus
 
@@ -115,23 +114,23 @@ def test_parse_config_is_deterministic_across_repeated_calls():
     assert list(ok_first.directives) == list(ok_second.directives)
 
 
-def test_parse_config_oversized_input_rejected_without_crash():
+def test_parse_config_pathologically_deep_nesting_never_crashes():
+    # No nesting-depth cap: the platform owns resource limits, not this
+    # package. But crossplane's own parser (and our tree conversion) is
+    # recursive, so pathologically deep brace nesting must never surface as
+    # an unhandled RecursionError/crash — only as a clean, structured
+    # result: either a best-effort parse or a populated `error` field.
     ax = _TestContext()
-    huge = "http {\n" + ("  # pad\n" * (MAX_CONFIG_BYTES // 8 + 100)) + "}\n"
-    assert len(huge.encode("utf-8")) > MAX_CONFIG_BYTES
-    result = parse_config(ax, NginxConfig(config=huge))
-    assert result.error != ""
-    assert "byte" in result.error or "exceeds" in result.error
-    assert len(result.directives) == 0
-
-
-def test_parse_config_deep_nesting_rejected_without_crash():
-    ax = _TestContext()
-    deep = "http {\n" + ("a {\n" * (MAX_NESTING_DEPTH + 50)) + ("}\n" * (MAX_NESTING_DEPTH + 50)) + "}\n"
+    depth = 5000
+    deep = "http {\n" + ("a {\n" * depth) + ("}\n" * depth) + "}\n"
     result = parse_config(ax, NginxConfig(config=deep))
-    assert result.error != ""
-    assert "nesting" in result.error
-    assert len(result.directives) == 0
+    if result.error:
+        assert isinstance(result.error, str) and result.error != ""
+        assert len(result.directives) == 0
+    else:
+        # Best-effort parse succeeded (or reported structural issues) —
+        # either way, no exception escaped.
+        assert result.valid in (True, False)
 
 
 def test_parse_config_empty_input_is_valid_and_empty():

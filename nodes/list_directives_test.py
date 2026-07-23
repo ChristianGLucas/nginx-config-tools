@@ -2,7 +2,6 @@ from gen.messages_pb2 import NginxConfig
 from nodes.list_directives import list_directives
 from nodes.parse_config import parse_config
 from nodes._test_fixtures import SAMPLE_CONFIG
-from nodes.nginx_parse import MAX_CONFIG_BYTES
 from gen.axiom_context import SecretStatus
 
 
@@ -48,14 +47,6 @@ def test_list_directives_flattens_every_level():
     nested = [d for d in result.directives if d.name == "proxy_pass"]
     assert len(nested) == 1
     assert list(nested[0].context_path) == ["http", "server", "location"]
-
-
-def test_list_directives_error_path():
-    ax = _TestContext()
-    huge = "http {\n" + ("  # pad\n" * (MAX_CONFIG_BYTES // 8 + 100)) + "}\n"
-    result = list_directives(ax, NginxConfig(config=huge))
-    assert result.error != ""
-    assert len(result.directives) == 0
 
 
 def test_list_directives_chains_after_parse_config_without_reparsing():
