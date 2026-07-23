@@ -1,7 +1,7 @@
 # nginx-config-tools
 
 Deterministic structural parsing and inspection of nginx configuration text for the
-[Axiom](https://axiom.co) marketplace, published under the `christiangeorgelucas` handle.
+[Axiom](https://axiomide.com) marketplace, published under the `christiangeorgelucas` handle.
 
 Wraps [`nginxinc/crossplane`](https://github.com/nginxinc/crossplane) (Apache-2.0), the official
 NGINX, Inc. config parser — pure Python, zero runtime dependencies of its own, the same
